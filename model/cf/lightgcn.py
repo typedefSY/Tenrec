@@ -194,7 +194,7 @@ class LightGCN(GeneralRecommender):
 
                 rec_ids = torch.cat((rec_ids, rank_list), 0)
 
-        return rec_ids.cpu().numpy().astype(np.int)
+        return rec_ids.cpu().numpy().astype(np.int32)
 
     def full_rank(self, u):
         if self.restore_user_e is None or self.restore_item_e is None:

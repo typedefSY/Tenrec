@@ -102,7 +102,7 @@ class MF(GeneralRecommender):
                 rank_list = self.full_rank(us)
                 rec_ids = torch.cat((rec_ids, rank_list), 0)
 
-        return rec_ids.cpu().numpy().astype(np.int)
+        return rec_ids.cpu().numpy().astype(np.int32)
 
     def full_rank(self, u):
         u = u.to(self.device)
