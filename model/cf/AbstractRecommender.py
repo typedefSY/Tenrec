@@ -99,7 +99,7 @@ class GeneralRecommender(AbstractRecommender):
         # os.environ['CUDA_VISIBLE_DEVICES'] = config['gpu']
         # self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         # self.logger = config['logger']
-        self.device = args.device
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     def fit(self, train_loader, val_loader):
         self.to(self.device)
