@@ -1,3 +1,6 @@
 Tenrec/
-Dataset/
+data/
 *.zip
+__pycache__/
+runs/
+checkpoint/
