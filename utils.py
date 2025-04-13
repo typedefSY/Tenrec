@@ -811,7 +811,7 @@ class cold_reset_df(object):
 
     def fit_transform(self, df1, df2):
         print("=" * 10, "Resetting user ids and item ids in DataFrame", "=" * 10)
-        df = df1['user_id'].append(df2['user_id'])
+        df = pd.concat([df1['user_id'], df2['user_id']])
         df = self.user_enc.fit_transform(df) + 1
         df1['item_id'] = self.item_enc1.fit_transform(df1['item_id']) + 1
         df1['user_id'] = df[:len(df1)]
