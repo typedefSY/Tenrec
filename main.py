@@ -47,7 +47,7 @@ from model.cf.ngcf import NGCF
 # from model.cf.vae import VAECF
 # from model.cf.item2vec import Item2Vec
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '6'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 def select_sampler(train_data, val_data, test_data, user_count, item_count, args):
     if args.sample == 'random':
@@ -152,7 +152,7 @@ def get_data(args):
             cold_1 = cold_data[:size1]
             cold_2 = cold_data[size1:]
             val_len = len(cold_2) // 2
-            train_data = hot_data.append(cold_1)
+            train_data = pd.concat([hot_data, cold_1])
             val_data = cold_2[:val_len]
             test_data = cold_2[val_len:]
             x_train, y_train = train_data.source.values.tolist(), train_data.target.values.tolist()
@@ -882,8 +882,3 @@ if __name__ == "__main__":
         ndcg = NDCG(args.test_ur, preds, args.test_u)
         recall = Recall(args.test_ur, preds, args.test_u)
         print("Test", "NDCG@{}:".format(args.k), ndcg, "Recall@{}:".format(args.k), recall)
-
-
-
-
-
