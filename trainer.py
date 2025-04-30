@@ -445,22 +445,27 @@ def SequenceTrainer(epoch, model, dataloader, optimizer, writer, args): #schedul
     loss_fn = nn.CrossEntropyLoss(ignore_index=0)
     for data in dataloader:
         optimizer.zero_grad()
-        data = [x.to(args.device) for x in data]
-        seqs, labels = data
-        logits = model(seqs) # B x T x V
-        if 'cold' in args.task_name or ('life_long' in args.task_name and args.task != 0):
-            logits = logits.mean(1)
-            labels = labels.view(-1)
-        else:
-            logits = logits.view(-1, logits.size(-1)) # (B*T) x V
-            labels = labels.view(-1)  # B*T
+        seqs, labels = [x.to(args.device) for x in data]
+
+        logits = model(seqs)                       # 3-D (B,T,V)  或  2-D (B,V)
+
+        # --- ① 兼容 HyperBERT：仅当 logits 仍为 3 维才按时间维处理 ---
+        if logits.dim() == 3:
+            if 'cold' in args.task_name or ('life_long' in args.task_name and args.task != 0):
+                logits = logits.mean(1)            # B×V
+                labels = labels.view(-1)           # B
+            else:
+                logits = logits.view(-1, logits.size(-1))  # (B*T)×V
+                labels = labels.view(-1)                   # B*T
+        else:                # logits 已是 B×V（HyperBERT）
+            labels = labels.view(-1)                       # B
 
         loss = loss_fn(logits, labels)
         loss.backward()
         optimizer.step()
         running_loss += loss.detach().cpu().item()
     writer.add_scalar('Train/loss', running_loss / len(dataloader), epoch)
-    print("Training CE Loss: {:.5f}".format(running_loss / len(dataloader)))
+    print(f"Training CE Loss: {running_loss / len(dataloader):.5f}")
     return optimizer
 
 def Sequence_pn_Trainer(epoch, model, dataloader, optimizer, writer, args):  # schedular,
@@ -486,35 +491,32 @@ def Sequence_pn_Trainer(epoch, model, dataloader, optimizer, writer, args):  # s
     return optimizer
 
 def Sequence_full_Validate(epoch, model, dataloader, writer, args, test=False):
-    print("+" * 20, "Valid Epoch {}".format(epoch + 1), "+" * 20)
+    print("+" * 20, f"Valid Epoch {epoch + 1}", "+" * 20)
     model.eval()
-    avg_metrics = {}
-    i = 0
+    avg_metrics, i = {}, 0
+
     with torch.no_grad():
-        tqdm_dataloader = dataloader
-        for data in tqdm_dataloader:
-            data = [x.to(args.device) for x in data]
-            seqs, labels = data
-            if test:
-                scores = model.predict(seqs)
-            else:
-                scores = model(seqs)
-            if 'cold' in args.task_name or ('life_long' in args.task_name and args.task != 0):
-                scores = scores.mean(1)
-            else:
-                scores = scores[:, -1, :]
+        for data in dataloader:
+            seqs, labels = [x.to(args.device) for x in data]
+            scores = model.predict(seqs) if test else model(seqs)   # 3-D 或 2-D
+
+            # --- ② 仅当 3 维才做时间维处理 ---
+            if scores.dim() == 3:
+                if 'cold' in args.task_name or ('life_long' in args.task_name and args.task != 0):
+                    scores = scores.mean(1)        # B×V
+                else:
+                    scores = scores[:, -1, :]      # 取最后一步  B×V
+
             metrics = recalls_and_ndcgs_for_ks(scores, labels, args.metric_ks, args)
             i += 1
-            for key, value in metrics.items():
-                if key not in avg_metrics:
-                    avg_metrics[key] = value
-                else:
-                    avg_metrics[key] += value
-    for key, value in avg_metrics.items():
-        avg_metrics[key] = value / i
+            for k, v in metrics.items():
+                avg_metrics[k] = avg_metrics.get(k, 0) + v
+
+    for k in avg_metrics:
+        avg_metrics[k] /= i
     print(avg_metrics)
     for k in sorted(args.metric_ks, reverse=True):
-        writer.add_scalar('Train/NDCG@{}'.format(k), avg_metrics['NDCG@%d' % k], epoch)
+        writer.add_scalar(f'Train/NDCG@{k}', avg_metrics[f'NDCG@{k}'], epoch)
     return avg_metrics
 
 def Sequence_neg_Validate(epoch, model, optimizer, dataloader, writer, args):

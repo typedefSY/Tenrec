@@ -38,6 +38,7 @@ from model.life_long.bert4life import BERT4Life
 from model.life_long.sas4life import SAS4Life
 from model.coldstart.bert4coldstart import BERT_ColdstartModel
 from model.coldstart.peter4coldstart import Peter4Coldstart
+from model.coldstart.hyperbert4rec import Hyper_BERT_ColdstartModel
 from model.model_accelerate.sas4acc import SAS4accModel
 from model.model_compression.sas4cp import SAS4cpModel
 from model.cf.ncf import NCF
@@ -145,36 +146,55 @@ def get_data(args):
         return train_loader, val_loader, test_loader
 
     elif name == 'cold_start':
+        require_feat = (args.model_name == 'hyperbert4coldstart')   # ←★ 核心开关
+
+        # ---------- 1. 取数据 ----------
         if args.ch:
             print("hot & cold")
-            cold_data, hot_data, user_count, vocab_size, item_count = colddataset(args.item_min, args)
-            size1 = len(cold_data) // 2
-            cold_1 = cold_data[:size1]
-            cold_2 = cold_data[size1:]
+            cold_data, hot_data, user_count, vocab_size, item_count, item_features = colddataset(args.item_min, args)
+
+            size1   = len(cold_data) // 2
+            cold_1  = cold_data[:size1]
+            cold_2  = cold_data[size1:]
             val_len = len(cold_2) // 2
+
             train_data = pd.concat([hot_data, cold_1])
-            val_data = cold_2[:val_len]
-            test_data = cold_2[val_len:]
-            x_train, y_train = train_data.source.values.tolist(), train_data.target.values.tolist()
-            x_val, y_val = val_data.source.values.tolist(), val_data.target.values.tolist()
-            x_test, y_test = test_data.source.values.tolist(), test_data.target.values.tolist()
+            val_data   = cold_2[:val_len]
+            test_data  = cold_2[val_len:]
+
+            x_train, y_train = train_data.source.tolist(), train_data.target.tolist()
+            x_val,   y_val   = val_data.source.tolist(),   val_data.target.tolist()
+            x_test,  y_test  = test_data.source.tolist(),  test_data.target.tolist()
         else:
-            data, user_count, vocab_size, item_count = colddataset(args.item_min, args)
-            x_train, x_test, y_train, y_test = train_test_split(data.source.values.tolist(),
-                                                                data.target.values.tolist(),
-                                                                test_size=0.2, random_state=args.seed)
-            x_val, x_test, y_val, y_test = train_test_split(x_test, y_test, test_size=0.5, random_state=args.seed)
-        args.num_users = user_count
-        args.num_items = item_count
+            data, user_count, vocab_size, item_count, item_features = colddataset(args.item_min, args)
+
+            x_train, x_test, y_train, y_test = train_test_split(
+                data.source.tolist(), data.target.tolist(),
+                test_size=0.2, random_state=args.seed)
+            x_val, x_test, y_val, y_test = train_test_split(
+                x_test, y_test, test_size=0.5, random_state=args.seed)
+
+        # ---------- 2. 记录维度 ----------
+        args.num_users     = user_count
+        args.num_items     = item_count
         args.num_embedding = vocab_size
 
-        train_dataset, valid_dataset = ColdDataset(x_train, y_train, args.max_len, args.pad_token), ColdEvalDataset(
-            x_val, y_val, args.max_len, args.pad_token, args.num_items)
-        test_dataset = ColdEvalDataset(x_test, y_test, args.max_len, args.pad_token, args.num_items)
+        # ---------- 3. 构建 Dataset ----------
+        train_dataset  = ColdDataset(x_train, y_train, args.max_len, args.pad_token)
+        valid_dataset  = ColdEvalDataset(x_val, y_val, args.max_len, args.pad_token, args.num_items)
+        test_dataset   = ColdEvalDataset(x_test, y_test, args.max_len, args.pad_token, args.num_items)
+
+        # ---------- 4. DataLoader ----------
         train_dataloader = get_train_loader(train_dataset, args)
         valid_dataloader = get_val_loader(valid_dataset, args)
-        test_dataloader = get_test_loader(test_dataset, args)
-        return train_dataloader, valid_dataloader, test_dataloader
+        test_dataloader  = get_test_loader(test_dataset, args)
+
+        # ---------- 5. 返回 ----------
+        if require_feat:
+            return train_dataloader, valid_dataloader, test_dataloader, item_features
+        else:
+            return train_dataloader, valid_dataloader, test_dataloader
+
     elif name == 'life_long':
         if args.task == 0:
             _, data, user_count, item_count = sequencedataset(args.item_min, args, path)
@@ -251,7 +271,7 @@ def get_data(args):
     else:
         raise ValueError('unknown dataset name: ' + name)
 
-def get_model(args, linear_feature_columns=None, dnn_feature_columns=None, history_feature_list=None):
+def get_model(args, linear_feature_columns=None, dnn_feature_columns=None, history_feature_list=None, item_features=None):
     name = args.model_name
     if name == 'deepfm':
         return DeepFM(linear_feature_columns, dnn_feature_columns, task='binary', device=args.device)
@@ -303,6 +323,8 @@ def get_model(args, linear_feature_columns=None, dnn_feature_columns=None, histo
         return SAS4Life
     elif name == 'bert4coldstart':
         return BERT_ColdstartModel(args)
+    elif name == 'hyperbert4coldstart':
+        return Hyper_BERT_ColdstartModel(args, item_features)
     elif name == 'peter4coldstart':
         return Peter4Coldstart(args)
     elif name == 'dnn4profile':
@@ -471,6 +493,11 @@ if __name__ == "__main__":
 
     # cold_start
     parser.add_argument('--ch', type=bool, default=True)
+    parser.add_argument('--feature_dim', type=int, default=64, help='Embedding dimension for non-ID features')
+    parser.add_argument('--num_category_first', type=int, default=0, 
+                   help='Number of first-level categories (set automatically)')
+    parser.add_argument('--num_category_second', type=int, default=0, 
+                    help='Number of second-level categories (set automatically)')
 
     args = parser.parse_args()
     if args.is_parallel:
@@ -810,15 +837,18 @@ if __name__ == "__main__":
         print('=============cold_start=============')
         # args.source_path = '/data/sbr_data_1M.csv'
         # args.target_path = '/data/cold_data.csv'
-        train_loader, val_loader, test_loader = get_data(args) #, user_noclick
+        if args.model_name == 'hyperbert4coldstart':
+            train_loader, val_loader, test_loader, item_features = get_data(args)
+            model = get_model(args, item_features=item_features)
+        else:
+            train_loader, val_loader, test_loader = get_data(args)
+            model = get_model(args)
         if args.is_pretrain == 1:
             print("pretrain")
-            model = get_model(args)
             SeqTrain(args.epochs, model, train_loader, val_loader, writer, args) #, user_noclick
             writer.close()
         elif args.is_pretrain == 2:
             args.is_mp = False
-            model = get_model(args)
             SeqTrain(args.epochs, model, train_loader, val_loader, writer, args)
             writer.close()
         else:
@@ -831,8 +861,6 @@ if __name__ == "__main__":
             if 'bert' in args.model_name:
                 best_weight.pop('out.weight')
                 best_weight.pop('out.bias')
-
-            model = get_model(args)
 
             model_state = model.module.state_dict() if args.is_parallel else model.state_dict()
             best_weight = {k: v for k, v in best_weight.items() if k in model_state}
@@ -849,7 +877,10 @@ if __name__ == "__main__":
             SeqTrain(args.epochs, model, train_loader, val_loader, writer, args)
             writer.close()
         if args.eval:
-            model = get_model(args)
+            if args.model_name == 'hyperbert4coldstart':
+                model = get_model(args, item_features=item_features)
+            else:
+                model = get_model(args)
             best_weight = torch.load(os.path.join(args.save_path,
                                                   '{}_{}_seed{}_is_pretrain_{}_best_model_lr{}_wd{}_block{}_hd{}_emb{}.pth'.format(args.task_name, args.model_name, args.seed, args.is_pretrain,
                                                                                                                               args.lr, args.weight_decay, args.block_num, args.hidden_size, args.embedding_size)))

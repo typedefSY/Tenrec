@@ -519,131 +519,165 @@ def data_count(df, item_min, target=False):
     return filter_df, user_count, item_count
 
 
+# ===================== construct_data =====================
 def construct_data(args, item_min):
-    path1 = args.target_path
-    path2 = args.source_path
-    if args.task != 2:
-        df1 = pd.read_csv(path1, usecols=['user_id', 'item_id', 'click'])
-        df1 = df1[df1.click.isin([1])]
-    else:
-        df1 = pd.read_csv(path1, usecols=['user_id', 'item_id', 'like'])
-        df1 = df1[df1.like.isin([1])]
-    df2 = pd.read_csv(path2, usecols=['user_id', 'item_id', 'click'])
-    df2 = df2[df2.click.isin([1])]
-    user_counts = df2.groupby('user_id').size()
-    user_subset = np.in1d(df2.user_id, user_counts[user_counts >= item_min].index)
-    df2 = df2[user_subset].reset_index(drop=True)
+    path1, path2 = args.target_path, args.source_path
 
-    assert (df2.groupby('user_id').size() < item_min).sum() == 0
-    s_item_count = len(set(df2['item_id']))
-    reset_ob = cold_reset_df()
-    df2, df1 = reset_ob.fit_transform(df2, df1)
-    user1 = set(df1.user_id.values.tolist())
-    user2 = set(df2.user_id.values.tolist())
-    user = user1 & user2
-    df1 = df1[df1.user_id.isin(list(user))]
-    df2 = df2[df2.user_id.isin(list(user))]
-    new_data1 = []
-    new_data2 = []
-    for u in user:
-        tmp_data2 = df2[df2.user_id == u][:-3].values.tolist()
+    # ---------- 1. 读入目标域/源域 ----------
+    if args.task != 2:   # click
+        df1 = pd.read_csv(path1, usecols=['user_id','item_id','click',
+                                          'category_first','category_second',
+                                          'click_count','like_count','comment_count'])
+        df1 = df1[df1.click == 1]
+    else:                # like
+        df1 = pd.read_csv(path1, usecols=['user_id','item_id','like',
+                                          'category_first','category_second',
+                                          'click_count','like_count','comment_count'])
+        df1 = df1[df1.like == 1]
+
+    df2 = pd.read_csv(path2, usecols=['user_id','item_id','click'])
+    df2 = df2[df2.click == 1]
+
+    # ---------- 2. 过滤交互不足的用户 ----------
+    active = df2.user_id.value_counts()
+    df2 = df2[df2.user_id.isin(active[active >= item_min].index)].reset_index(drop=True)
+    s_item_count = df2.item_id.nunique()
+
+    # ---------- 3. 类别编码 ----------
+    enc1, enc2 = LabelEncoder(), LabelEncoder()
+    if 'category_first'  in df1: df1['category_first']  = enc1.fit_transform(df1['category_first'].astype(str))
+    if 'category_second' in df1: df1['category_second'] = enc2.fit_transform(df1['category_second'].astype(str))
+    df1['category_first']  = enc1.fit_transform(df1['category_first'].astype(str)) + 1
+    df1['category_second'] = enc2.fit_transform(df1['category_second'].astype(str)) + 1
+    num_category_first  = len(enc1.classes_) + 1   # +1 for PAD/UNK
+    num_category_second = len(enc2.classes_) + 1
+
+    # ---------- 4. ID 重排 ----------
+    df2, df1 = cold_reset_df().fit_transform(df2, df1)
+
+    # ---------- 5. 筛选共有用户 ----------
+    common = set(df1.user_id) & set(df2.user_id)
+    df1, df2 = df1[df1.user_id.isin(common)], df2[df2.user_id.isin(common)]
+
+    # ---------- 6. 组装新数据 ----------
+    new_data1, new_data2 = [], []
+    for u in common:
+        src_seq = df2[df2.user_id == u][:-3].values.tolist()
         if 'cold' in args.task_name:
-            tmp_data1 = df1[df1.user_id == u].values.tolist()
+            tgt_seq = df1[df1.user_id == u].values.tolist()
+        elif args.task == 1:
+            tgt_seq = df1[df1.user_id == u][-3:].values.tolist()
         else:
-            if args.task == 1:
-                tmp_data1 = df1[df1.user_id == u][-3:].values.tolist()
-            else:
-                tmp_data1 = df1[df1.user_id == u].values.tolist()
-        new_data1.extend(tmp_data1)
-        new_data2.extend(tmp_data2)
+            tgt_seq = df1[df1.user_id == u].values.tolist()
+        new_data1.extend(tgt_seq)
+        new_data2.extend(src_seq)
+
     new_data1 = pd.DataFrame(new_data1, columns=df1.columns)
     new_data2 = pd.DataFrame(new_data2, columns=df2.columns)
-    user_count = len(set(new_data1.user_id.values.tolist()))
-    reset_item = item_reset_df()
-    new_data1 = reset_item.fit_transform(new_data1)
-    t_item_count = len(set(new_data1['item_id']))
-    return new_data1, new_data2, user_count, t_item_count, s_item_count
 
+    # ---------- 7. 再次重排目标域 item_id ----------
+    new_data1 = item_reset_df().fit_transform(new_data1)
+    t_item_count = new_data1.item_id.nunique()
+
+    item_feature_info = {
+        'num_category_first':  num_category_first,
+        'num_category_second': num_category_second
+    }
+    user_count = new_data1.user_id.nunique()
+    return new_data1, new_data2, user_count, t_item_count, s_item_count, item_feature_info
+
+
+# ===================== construct_ch_data =====================
 def construct_ch_data(args, item_min):
-    path1 = args.target_path
-    path2 = args.source_path
+    path1, path2 = args.target_path, args.source_path
 
-    df1 = pd.read_csv(path1, usecols=['user_id', 'item_id', 'click'])
-    df1 = df1[df1.click.isin([1])]
-    df2 = pd.read_csv(path2, usecols=['user_id', 'item_id', 'click'])
-    df2 = df2[df2.click.isin([1])]
+    df1 = pd.read_csv(path1, usecols=['user_id','item_id','click',
+                                      'category_first','category_second',
+                                      'click_count','like_count','comment_count'])
+    df1 = df1[df1.click == 1]
 
-    user_counts = df2.groupby('user_id').size()
-    user_subset = np.in1d(df2.user_id, user_counts[user_counts >= item_min].index)
-    df2 = df2[user_subset].reset_index(drop=True)
+    df2 = pd.read_csv(path2, usecols=['user_id','item_id','click'])
+    df2 = df2[df2.click == 1]
 
-    assert (df2.groupby('user_id').size() < item_min).sum() == 0
-    s_item_count = len(set(df2['item_id']))
-    reset_ob = cold_reset_df()
-    df2, df1 = reset_ob.fit_transform(df2, df1)
+    active = df2.user_id.value_counts()
+    df2 = df2[df2.user_id.isin(active[active >= item_min].index)].reset_index(drop=True)
+    s_item_count = df2.item_id.nunique()
 
-    user1 = set(df1.user_id.values.tolist())
-    user2 = set(df2.user_id.values.tolist())
-    user = user1 & user2
-    # df = df[:100000]
-    df1 = df1[df1.user_id.isin(list(user))]
-    df2 = df2[df2.user_id.isin(list(user))]
+    enc1, enc2 = LabelEncoder(), LabelEncoder()
+    df1['category_first']  = enc1.fit_transform(df1['category_first'].astype(str))
+    df1['category_second'] = enc2.fit_transform(df1['category_second'].astype(str))
+    df1['category_first']  = enc1.fit_transform(df1['category_first'].astype(str)) + 1
+    df1['category_second'] = enc2.fit_transform(df1['category_second'].astype(str)) + 1
+    num_category_first  = len(enc1.classes_) + 1   # +1 for PAD/UNK
+    num_category_second = len(enc2.classes_) + 1
 
-    # cold and hot user
-    user_counts1 = df1.groupby('user_id').size()
-    cold_user_ind = np.in1d(df1.user_id, user_counts1[user_counts1 <= 5].index)
-    hot_user_ind = np.in1d(df1.user_id, user_counts1[user_counts1 > 5].index)
+    df2, df1 = cold_reset_df().fit_transform(df2, df1)
 
-    cold_user = set(df1[cold_user_ind].user_id.values.tolist())
-    hot_user = set(df1[hot_user_ind].user_id.values.tolist())
+    common = set(df1.user_id) & set(df2.user_id)
+    df1, df2 = df1[df1.user_id.isin(common)], df2[df2.user_id.isin(common)]
 
-    new_data1 = []
-    new_data2 = []
-    for u in user:
-        tmp_data2 = df2[df2.user_id == u][:-3].values.tolist()
-        tmp_data1 = df1[df1.user_id == u].values.tolist()
-        new_data1.extend(tmp_data1)
-        new_data2.extend(tmp_data2)
+    # 判定冷/热用户
+    inter_cnt = df1.groupby('user_id').size()
+    cold_user = set(inter_cnt[inter_cnt <= 5].index)
+    hot_user  = set(inter_cnt[inter_cnt > 5].index)
+
+    new_data1, new_data2 = [], []
+    for u in common:
+        new_data2.extend(df2[df2.user_id == u][:-3].values.tolist())
+        new_data1.extend(df1[df1.user_id == u].values.tolist())
+
     new_data1 = pd.DataFrame(new_data1, columns=df1.columns)
     new_data2 = pd.DataFrame(new_data2, columns=df2.columns)
-    user_count = len(set(new_data1.user_id.values.tolist()))
-    reset_item = item_reset_df()
-    new_data1 = reset_item.fit_transform(new_data1)
-    t_item_count = len(set(new_data1['item_id']))
-    return new_data1, new_data2, user_count, t_item_count, s_item_count, cold_user, hot_user
 
-def colddataset(item_min, args, path=None):
+    new_data1 = item_reset_df().fit_transform(new_data1)
+    t_item_count = new_data1.item_id.nunique()
+
+    item_feature_info = {
+        'num_category_first':  num_category_first,
+        'num_category_second': num_category_second
+    }
+    user_count = new_data1.user_id.nunique()
+    return new_data1, new_data2, user_count, t_item_count, s_item_count, cold_user, hot_user, item_feature_info
+
+
+# ===================== colddataset =====================
+def colddataset(item_min, args):
     if args.ch:
-        target_data, source_data, user_count, t_item_count, s_item_count, cold_user, hot_user = construct_ch_data(args, item_min)
+        target_data, source_data, user_cnt, t_item_cnt, s_item_cnt, cold_u, hot_u, feat_info = construct_ch_data(args, item_min)
     else:
-        target_data, source_data, user_count, t_item_count, s_item_count = construct_data(args, item_min)
-    print("+++user_history+++")
+        target_data, source_data, user_cnt, t_item_cnt, s_item_cnt, feat_info = construct_data(args, item_min)
+    args.num_category_first  = feat_info['num_category_first']
+    args.num_category_second = feat_info['num_category_second']
+
+    # ---------- 1. 构建全局 item_features ----------
+    item_features = {k: {} for k in ['category_first','category_second','click_count','like_count','comment_count']}
+    for _, row in target_data.iterrows():
+        i = row['item_id']
+        item_features['category_first'][i]  = row['category_first']
+        item_features['category_second'][i] = row['category_second']
+        item_features['click_count'][i]     = row['click_count']
+        item_features['like_count'][i]      = row['like_count']
+        item_features['comment_count'][i]   = row['comment_count']
+
+    # ---------- 2. 生成 (source_seq, target_item) 样本 ----------
     user_history = source_data.groupby('user_id').item_id.apply(list).to_dict()
-    target = target_data.groupby('user_id').item_id.apply(list).to_dict()
+    tgt_dict     = target_data.groupby('user_id').item_id.apply(list).to_dict()
+
+    def build_examples(user_set=None):
+        ex = []
+        for u, items in tgt_dict.items():
+            if user_set is None or u in user_set:
+                for it in items:
+                    ex.append([user_history[u] + [0], it])
+        return pd.DataFrame(ex, columns=['source','target'])
 
     if args.ch:
-        hot_examples = []
-        cold_examples = []
-        for u, t_list in tqdm(target.items()):
-            if u in cold_user:
-                for t in t_list:
-                    e_list = [user_history[u] + [0], t]
-                    cold_examples.append(e_list)
-            else:
-                for t in t_list:
-                    e_list = [user_history[u] + [0], t]
-                    hot_examples.append(e_list)
-        cold_examples = pd.DataFrame(cold_examples, columns=['source', 'target'])
-        hot_examples = pd.DataFrame(hot_examples, columns=['source', 'target'])
-        return cold_examples, hot_examples, user_count, s_item_count, t_item_count
+        cold_df = build_examples(cold_u)
+        hot_df  = build_examples(hot_u)
+        return cold_df, hot_df, user_cnt, s_item_cnt, t_item_cnt, item_features
     else:
-        examples = []
-        for u, t_list in tqdm(target.items()):
-            for t in t_list:
-                e_list = [user_history[u] + [0], t]
-                examples.append(e_list)
-        examples = pd.DataFrame(examples, columns=['source', 'target'])
-        return examples, user_count, s_item_count, t_item_count
+        all_df = build_examples()
+        return all_df, user_cnt, s_item_cnt, t_item_cnt, item_features
 
 def lifelongdataset(item_min, args, path=None):
     target_data, source_data, user_count, t_item_count, s_item_count = construct_data(args, item_min)

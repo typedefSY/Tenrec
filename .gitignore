@@ -4,3 +4,6 @@ data/
 __pycache__/
 runs/
 checkpoint/
+RLT4Rec/
+# push command
+# GIT_SSH_COMMAND="ssh -i /home/jovyan/rds/.ssh/id_ed25519 -o IdentitiesOnly=yes" git push
