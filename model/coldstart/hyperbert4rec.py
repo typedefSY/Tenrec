@@ -316,7 +316,7 @@ class Hyper_BERT_ColdstartModel(nn.Module):
         rep = self.attention_pool(bert_output, mask)
         
         # Improvement 2: Apply domain adaptation
-        rep = self.domain_adapter(rep)
+        rep = self.domain_adapter(rep)  # [batch_size, H]
         
         # Get item features
         feats = {
@@ -331,7 +331,7 @@ class Hyper_BERT_ColdstartModel(nn.Module):
         item_feat_vec = self.feat_embed(feats)
         
         # Improvement 3: Use improved hypernetwork
-        W = self.hypernet(item_feat_vec)
+        W = self.hypernet(item_feat_vec)   # [V, H]
         
         # Return scores with temperature scaling
-        return (rep @ W.t()) / self.temperature
+        return (rep @ W.t()) / self.temperature # [batch_size, V], V is num of items in target domain + 1 padding
